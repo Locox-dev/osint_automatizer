@@ -2,8 +2,9 @@ use inquire::{
     validator::{StringValidator, Validation, MultiOptionValidator},
     Text, error::InquireResult,
 };
-use std::process::Command;
+use std::{process::Command, hash::Hash};
 use std::{thread, time};
+use std::collections::HashMap;
 
 static TITLE: &str = r"
                 _    ____   _____ _____ _   _ _______ 
@@ -127,22 +128,41 @@ fn main() -> InquireResult<()> {
     if let Some(v) = location {
         target.set("location", Value::Str(v));
     }
-    println!("{:?}", target);
 
     //////////////////////////////////   Start getting some information!   //////////////////////////////////
-    if !target.username.is_empty() {
-        thread::spawn(move || {
-            let result = Command::new("cmd")
-                .args(["/c", "python", "tools\\sherlock\\sherlock", target.username.as_str()])
-                .spawn();
+    let mut gathered_infos = TargetGatheringResult::new();
 
-            match result {
-                Ok(_) => (),
+    if !target.username.is_empty() {
+        let handle = thread::spawn(move || {
+            let sherlock = Command::new("cmd")
+                .args(["/c", "python", "tools\\sherlock\\sherlock", target.username.as_str()])
+                .output();
+
+            match sherlock {
+                Ok(res) => {
+                    let output = res.stdout;
+                    let output_string = String::from_utf8_lossy(&output);
+
+                    for line in output_string.lines() {
+                        if let Some(start) = line.find("[+] ") {
+                            let content = &line[start + 4..];
+                            if let Some(separator) = content.find(": ") {
+                                let site_name = content[..separator].trim().to_string();
+                                let url = content[separator + 2..].trim().to_string();
+                                gathered_infos.accounts.insert(site_name, url);
+                            }
+                        }
+                    }
+
+                    println!("{:?}", gathered_infos.accounts);
+                },
                 Err(err) => {
                     eprintln!("Failed to execute script: {}", err);
                 }
             }
         });
+
+        handle.join();
     }
 
 
@@ -243,5 +263,17 @@ impl Target {
         };
 
         Ok(result)
+    }
+}
+
+struct TargetGatheringResult {
+    accounts: HashMap<String, String>,
+}
+
+impl TargetGatheringResult {
+    fn new() -> Self {
+        TargetGatheringResult {
+            accounts: HashMap::new(),
+        }
     }
 }
