@@ -1,10 +1,13 @@
 use inquire::{
-    validator::{StringValidator, Validation, MultiOptionValidator},
+    validator::Validation,
     Text, error::InquireResult,
 };
-use std::{process::Command, hash::Hash};
-use std::{thread, time};
+use std::process::Command;
+use std::thread;
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+
 
 static TITLE: &str = r"
                 _    ____   _____ _____ _   _ _______ 
@@ -18,6 +21,10 @@ static TITLE: &str = r"
 fn main() -> InquireResult<()> {
     clear_terminal_screen();
     println!("{}", TITLE);
+
+    let spinner_style = ProgressStyle::with_template("{prefix:.bold.dim} {spinner} {wide_msg}")
+        .unwrap()
+        .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ");
 
     let validator = |input: &str| {
         if input.chars().count() > 140 {
@@ -130,40 +137,34 @@ fn main() -> InquireResult<()> {
     }
 
     //////////////////////////////////   Start getting some information!   //////////////////////////////////
-    let mut gathered_infos = TargetGatheringResult::new();
+    let m = MultiProgress::new();
+    let gathered_infos = Arc::new(Mutex::new(TargetGatheringResult::new()));
 
     if !target.username.is_empty() {
+
+        let gathered_infos_clone = gathered_infos.clone();
+
         let handle = thread::spawn(move || {
-            let sherlock = Command::new("cmd")
-                .args(["/c", "python", "tools\\sherlock\\sherlock", target.username.as_str()])
-                .output();
 
-            match sherlock {
-                Ok(res) => {
-                    let output = res.stdout;
-                    let output_string = String::from_utf8_lossy(&output);
-
-                    for line in output_string.lines() {
-                        if let Some(start) = line.find("[+] ") {
-                            let content = &line[start + 4..];
-                            if let Some(separator) = content.find(": ") {
-                                let site_name = content[..separator].trim().to_string();
-                                let url = content[separator + 2..].trim().to_string();
-                                gathered_infos.accounts.insert(site_name, url);
-                            }
-                        }
-                    }
-
-                    println!("{:?}", gathered_infos.accounts);
+            let pb = m.add(ProgressBar::new(0));
+            pb.set_style(spinner_style.clone());
+            pb.set_message("Checking for accounts using Sherlock.");
+            
+            match tool_sherlock(target.username) {
+                Ok(info) => {
+                    gathered_infos_clone.lock().unwrap().set("accounts", Value::HMap(info));
+                    pb.finish_with_message("Done checking for accounts!");
                 },
-                Err(err) => {
-                    eprintln!("Failed to execute script: {}", err);
-                }
+                Err(why) => println!("Something went wrong {}", why)
             }
         });
 
-        handle.join();
+        let _ = handle.join();
+        
     }
+
+    //println!("{:?}", gathered_infos.lock().unwrap().accounts);
+    
 
 
     Ok(())
@@ -186,10 +187,42 @@ fn clear_terminal_screen() {
     };
 }
 
+fn tool_sherlock(data: String) -> Result<HashMap<String, String>, std::io::Error>{
+    let mut gathered_infos = HashMap::new();
+    let sherlock = Command::new("cmd")
+        .args(["/c", "python", "tools\\sherlock\\sherlock", data.as_str()])
+        .output();
+
+    match sherlock {
+        Ok(res) => {
+            let output = res.stdout;
+            let output_string = String::from_utf8_lossy(&output);
+
+            for line in output_string.lines() {
+                if let Some(start) = line.find("[+] ") {
+                    let content = &line[start + 4..];
+                    if let Some(separator) = content.find(": ") {
+                        let site_name = content[..separator].trim().to_string();
+                        let url = content[separator + 2..].trim().to_string();
+                        gathered_infos.insert(site_name, url);
+                    }
+                }
+            }
+        },
+        Err(err) => {
+            eprintln!("Failed to execute script: {}", err);
+        }
+    }
+
+    Ok(gathered_infos)
+
+}
+
 enum Value {
     Str(String),
     VecStr(Vec<String>),
     Int(i32),
+    HMap(HashMap<String, String>),
 }
 
 #[derive(Debug)]
@@ -242,11 +275,14 @@ impl Target {
             Value::Int(v) => match key {
                 "age" => self.age = v,
                 _ => println!("Invalid key"),
+            },
+            Value::HMap(_v) => match key {
+                _ => println!("Invalid key"),
             }
         }
     }
 
-    fn get(&self, key: &str) -> Result<Value, std::io::Error> {
+    /*fn get(&self, key: &str) -> Result<Value, std::io::Error> {
         let mut result = Value::Str("".to_string());
         match key {
             "first_name" => result = Value::Str(self.first_name.clone()),
@@ -263,7 +299,7 @@ impl Target {
         };
 
         Ok(result)
-    }
+    }*/
 }
 
 struct TargetGatheringResult {
@@ -276,4 +312,26 @@ impl TargetGatheringResult {
             accounts: HashMap::new(),
         }
     }
+
+    fn set(&mut self, key: &str, value: Value) {
+        match value {
+            Value::Str(_v) => match key {
+                _ => println!("Invalid key"),
+            },
+            Value::VecStr(_v) => match key {
+                _ => println!("Invalid key"),
+            },
+            Value::Int(_v) => match key {
+                _ => println!("Invalid key"),
+            },
+            Value::HMap(v) => match key {
+                "accounts" => self.accounts = v,
+                _ => println!("Invalid key"),
+            }
+        }
+    }
+
+    /*fn get(&self, key: &str) -> Option<&String> {
+        self.accounts.get(key)
+    }*/
 }
